@@ -63,8 +63,8 @@ def fit(args, model, epochs, boundaries, is_validation = False):
             input_batch = tuple(input.to(model.device) for input in input_batch)
 
             # forward
-            recon_loss = model(input_batch)
-            loss = recon_loss
+            kl_loss, recon_loss = model(input_batch)
+            loss = kl_weight * kl_loss + recon_loss
             # print('KL_loss=' + str(kl_loss.tolist()) + ', recon_loss=' + str(recon_loss.tolist()))
 
             # backward

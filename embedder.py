@@ -36,14 +36,6 @@ class Embedder(nn.Module):
         self.encoder_mu = nn.Linear(encoder_GRU_out_dim, final_embedding_dim)
         self.encoder_logVar = nn.Linear(encoder_GRU_out_dim, final_embedding_dim)
 
-        # mine
-        # num_tokens, codebook_dim = 512, 128
-        # self.num_tokens = 256
-        # self.encoder_logits = nn.Linear(encoder_GRU_out_dim, num_tokens * 64)
-        # self.codebook = nn.Embedding(num_tokens, codebook_dim)
-        self.encoder_GRU_out_to_embedding = nn.Linear(encoder_GRU_out_dim, final_embedding_dim)
-
-
         # Decoder
         self.decoder_emb_to_hid = nn.Linear(final_embedding_dim, decoder_hid_dim)
         self.decoder_GRU = nn.GRU(input_size=vocab_size_and_dim + final_embedding_dim, hidden_size=decoder_hid_dim, num_layers=decoder_num_layers,
@@ -70,9 +62,9 @@ class Embedder(nn.Module):
         return string
 
     def forward(self, tuple_strings):
-        embedding = self.forward_encoder(tuple_strings)
+        embedding, KL_loss = self.forward_encoder(tuple_strings)
         recon_loss, batch_strings_recon_score = self.forward_decoder(tuple_strings, embedding)
-        return recon_loss
+        return KL_loss, recon_loss
 
     def forward_encoder(self, tuple_strings):
         # embed strings and apply GRU encoder
@@ -84,25 +76,15 @@ class Embedder(nn.Module):
         h = h[-(1 + int(self.encoder_GRU.bidirectional)):]
         h = torch.cat(h.split(1), dim=-1).squeeze(0)
 
-        # my reparametrization trick
-        # logits = self.encoder_logits(h).view(-1, self.codebook.num_embeddings) #
-        # soft_one_hot = F.gumbel_softmax(logits, tau=0.9, dim=1, hard=False)
-        # embedding = F.einsum('b l n, n d -> b l d', soft_one_hot, self.codebook.weight)
-        #
-        # log_qy = F.log_softmax(logits, dim=-1)
-        # log_uniform = torch.log(torch.tensor([1. / self.num_tokens], device=self.device))
-        # KL_loss = F.kl_div(log_uniform, log_qy, None, None, 'batchmean', log_target=True)
-        embedding = self.encoder_GRU_out_to_embedding(h)
-        return embedding
-        # # reparametrization trick
-        # mu, logVar = self.encoder_mu(h), self.encoder_logVar(h)
-        # eps = torch.randn_like(mu)
-        # embedding = mu + (logVar / 2).exp() * eps
-        # KL_loss = 0.5 * (logVar.exp() + mu ** 2 - 1 - logVar).sum(1).mean()
-        # return embedding, KL_loss
+        # reparametrization trick
+        mu, logVar = self.encoder_mu(h), self.encoder_logVar(h)
+        eps = torch.randn_like(mu)
+        embedding = mu + (logVar / 2).exp() * eps
+        KL_loss = 0.5 * (logVar.exp() + mu ** 2 - 1 - logVar).sum(1).mean()
+        return embedding, KL_loss
 
 
-    def forward_decoder(self, tuple_strings, embedding):
+    def     forward_decoder(self, tuple_strings, embedding):
         # prepare initial hidden state for GRU
         h_0 = self.decoder_emb_to_hid(embedding)
         h_0 = h_0.unsqueeze(0).repeat(self.decoder_GRU.num_layers, 1, 1)
