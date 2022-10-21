@@ -42,9 +42,18 @@ class Embedder(nn.Module):
                                   batch_first=True, dropout=decoder_dropout if decoder_num_layers > 1 else 0)
         self.decoder_GRU_out_to_char_score = nn.Linear(decoder_hid_dim, vocab_size_and_dim)
 
+        self.value_head = ValueHead(hidden_size=decoder_hid_dim, drop_in=0.2, drop_out=0.2)
+        self.value_head.detach_head=True
+
+        # Ref
+        self.decoder_emb_to_hid_ref = nn.Linear(final_embedding_dim, decoder_hid_dim)
+        self.decoder_GRU_ref = nn.GRU(input_size=vocab_size_and_dim + final_embedding_dim, hidden_size=decoder_hid_dim, num_layers=decoder_num_layers,
+                                  batch_first=True, dropout=decoder_dropout if decoder_num_layers > 1 else 0)
+        self.decoder_GRU_out_to_char_score_ref = nn.Linear(decoder_hid_dim, vocab_size_and_dim)
+
         # Grouping the model's parameters
         self.encoder = nn.ModuleList([self.encoder_GRU, self.encoder_mu, self.encoder_logVar])
-        self.decoder = nn.ModuleList([self.decoder_emb_to_hid, self.decoder_GRU, self.decoder_GRU_out_to_char_score])
+        self.decoder = nn.ModuleList([self.decoder_emb_to_hid, self.decoder_GRU, self.decoder_GRU_out_to_char_score, self.value_head])
         self.embedder = nn.ModuleList([self.char_embedder, self.encoder, self.decoder])
 
     @property
@@ -84,10 +93,24 @@ class Embedder(nn.Module):
         return embedding, KL_loss
 
 
-    def     forward_decoder(self, tuple_strings, embedding):
+    def PPO_prepare(self):
+        self.decoder_emb_to_hid_ref.load_state_dict(self.decoder_emb_to_hid.state_dict())
+        self.decoder_GRU_ref.load_state_dict(self.decoder_GRU.state_dict())
+        self.decoder_GRU_out_to_char_score_ref.load_state_dict(self.decoder_GRU_out_to_char_score.state_dict())
+
+    def forward_decoder(self, tuple_strings, embedding,*, isRef=False, addValue=False):
+        if isRef and self.decoder_GRU_ref is not None:
+            decoder_emb_to_hid = self.decoder_emb_to_hid_ref
+            decoder_GRU = self.decoder_GRU_ref
+            decoder_GRU_out_to_char_score = self.decoder_GRU_out_to_char_score_ref
+        else:
+            decoder_emb_to_hid = self.decoder_emb_to_hid
+            decoder_GRU = self.decoder_GRU
+            decoder_GRU_out_to_char_score = self.decoder_GRU_out_to_char_score
+
         # prepare initial hidden state for GRU
-        h_0 = self.decoder_emb_to_hid(embedding)
-        h_0 = h_0.unsqueeze(0).repeat(self.decoder_GRU.num_layers, 1, 1)
+        h_0 = decoder_emb_to_hid(embedding)
+        h_0 = h_0.unsqueeze(0).repeat(decoder_GRU.num_layers, 1, 1)
 
         # prepare input to GRU
         lengths = [len(string) for string in tuple_strings]
@@ -98,15 +121,21 @@ class Embedder(nn.Module):
         GRU_input = nn.utils.rnn.pack_padded_sequence(GRU_input, lengths, batch_first=True)
 
         # apply GRU decoder
-        GRU_output, _ = self.decoder_GRU(GRU_input, h_0)
+        GRU_output, _ = decoder_GRU(GRU_input, h_0)
         GRU_output, _ = nn.utils.rnn.pad_packed_sequence(GRU_output, batch_first=True)
 
         # strings reconstruction and reconstruction loss
-        strings_recon_score = self.decoder_GRU_out_to_char_score(GRU_output)
+        strings_recon_score = decoder_GRU_out_to_char_score(GRU_output)
         recon_loss = 10 * F.cross_entropy(strings_recon_score[:, :-1].contiguous().view(-1, strings_recon_score.size(-1)),
                                           strings[:, 1:].contiguous().view(-1),
                                           ignore_index=self.dataset.c2i['<pad>'])
-        return recon_loss, strings_recon_score
+
+        if not addValue:
+            return recon_loss, strings_recon_score
+        else:
+            values = self.value_head(GRU_output)
+            return recon_loss, strings_recon_score, values
+
 
 
     def decoder_test(self, max_len=100, embedding=None, temp=1.0):
@@ -155,6 +184,46 @@ class Embedder(nn.Module):
                         final_output.append(output[i, :end_pads[i]])
 
         return [self.tensor2string(i_x) for i_x in final_output]
+
+
+
+class ValueHead(nn.Module):
+    """The ValueHead class implements a head for GPT2 that returns a scalar for each output token."""
+    def __init__(self, hidden_size, drop_in, drop_out):
+        super().__init__()
+        self.detach_head = False
+
+        # self.summary = nn.Identity()
+        # if hasattr(config, "summary_use_proj") and config.summary_use_proj:
+        self.summary = nn.Linear(hidden_size,1)
+
+        # self.activation = nn.Identity()
+        # if hasattr(config, "summary_activation") and config.summary_activation == "tanh":
+        self.activation = nn.Tanh()
+
+        # self.first_dropout = nn.Identity()
+        # if hasattr(config, "summary_first_dropout") and config.summary_first_dropout > 0:
+        self.first_dropout = nn.Dropout(drop_in)
+
+        # self.last_dropout = nn.Identity()
+        # if hasattr(config, "summary_last_dropout") and config.summary_last_dropout > 0:
+        self.last_dropout = nn.Dropout(drop_out)
+
+        self.flatten = nn.Flatten()
+
+    def forward(self, hidden_states, cls_index=None):
+        if self.detach_head:
+            output = hidden_states.detach()
+        else:
+            output = hidden_states
+        output = self.first_dropout(output)
+        output = self.summary(output)
+        output = self.activation(output)
+        output = self.last_dropout(output)
+
+        return output
+
+
 
 
 def save_checkpoint_embedder(current_criterion, best_criterion, model, args):
