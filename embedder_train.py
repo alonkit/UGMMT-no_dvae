@@ -4,7 +4,8 @@ from torch.optim.lr_scheduler import _LRScheduler
 import math
 from torch.nn.utils import clip_grad_norm_
 import matplotlib.pyplot as plt
-
+import matplotlib
+matplotlib.use("TkAgg")
 from SmilesPE.pretokenizer import atomwise_tokenizer
 
 # my files
@@ -50,7 +51,7 @@ def fit(args, model, epochs, boundaries, is_validation = False):
     # zero gradient
     model.zero_grad()
 
-    if model.name is 'CDN':
+    if True or  model.name is 'CDN':
         best_criterion = None
 
     for epoch in range(1, epochs+1):   # [1,2,...,epochs]
@@ -63,7 +64,9 @@ def fit(args, model, epochs, boundaries, is_validation = False):
             input_batch = tuple(input.to(model.device) for input in input_batch)
 
             # forward
-            kl_loss, recon_loss = model(input_batch)
+            embedding, kl_loss = model.forward_encoder(input_batch)
+            recon_loss, batch_strings_recon_score = model.forward_decoder(input_batch, embedding)
+
             loss = kl_weight * kl_loss + recon_loss
             # print('KL_loss=' + str(kl_loss.tolist()) + ', recon_loss=' + str(recon_loss.tolist()))
 
@@ -85,7 +88,7 @@ def fit(args, model, epochs, boundaries, is_validation = False):
             if args.plot_results is True:
                 fig.savefig(args.plots_folder + '/' + args.property + '/' + model.name + ' validation')
 
-            if model.name is 'CDN':
+            if True or model.name is 'CDN':
                 # save checkpoint
                 current_criterion = avg_similarity
                 best_criterion = save_checkpoint_embedder(current_criterion, best_criterion, model, args)
