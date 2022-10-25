@@ -34,7 +34,7 @@ clip_grad = 50
 ###################################################
 
 # main train function
-def fit(args, model, epochs, boundaries, is_validation = False):
+def fit(args, model, epochs, boundaries, is_validation = False, kl_loss=True):
 
     if epochs == 0:
         return
@@ -58,7 +58,7 @@ def fit(args, model, epochs, boundaries, is_validation = False):
         print(' ')
         print('epoch #' + str(epoch))
         kl_weight = kl_annealer(epoch)
-
+        print('kl_weight', kl_weight)
         # train 1 epoch
         for i, input_batch in enumerate(train_loader):
             input_batch = tuple(input.to(model.device) for input in input_batch)
@@ -67,7 +67,10 @@ def fit(args, model, epochs, boundaries, is_validation = False):
             embedding, kl_loss = model.forward_encoder(input_batch)
             recon_loss, batch_strings_recon_score = model.forward_decoder(input_batch, embedding)
 
-            loss = kl_weight * kl_loss + recon_loss
+            if kl_loss:
+                loss = kl_weight * kl_loss + recon_loss
+            else:
+                loss = recon_loss
             # print('KL_loss=' + str(kl_loss.tolist()) + ', recon_loss=' + str(recon_loss.tolist()))
 
             # backward

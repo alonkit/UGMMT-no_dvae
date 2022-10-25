@@ -22,7 +22,7 @@ def set_seed(seed):
 
 
 # generate output molecule from input molecule
-def input2output(args, input_batch, model_in, T, model_out, random_seed_list=None, max_out_len=90, recover_seed=True):
+def input2output(args, input_batch, model_in, model_out, random_seed_list=None, max_out_len=90, recover_seed=True):
     # prepare input
     input_batch = tuple(data.to(model_in.device) for data in input_batch)
 
@@ -46,11 +46,8 @@ def input2output(args, input_batch, model_in, T, model_out, random_seed_list=Non
             # embedder encode (METN)
             input_batch_emb, _ = model_in.forward_encoder(input_batch)
 
-            if args.use_EETN:
-                # embedding translator (EETN)
-                translated_batch_emb = T(input_batch_emb, input_batch_fp)
-            else:
-                translated_batch_emb = input_batch_emb
+
+            translated_batch_emb = input_batch_emb
 
         # embedder decode (decode test = input is <bos> and multi for next char + embedding) (METN)
         output_batch += model_out.decoder_test(max_len=max_out_len, embedding=translated_batch_emb)

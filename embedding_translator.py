@@ -194,9 +194,21 @@ def save_checkpoint(current_criterion, best_criterion, T, E, args):
     if best_criterion is None or current_criterion > best_criterion:
         best_criterion = current_criterion
         saved_state = dict(best_criterion=best_criterion,
-                           T=T.state_dict(),
+                           # T=T.state_dict(),
                            E=E)
         checkpoint_filename_path = args.checkpoints_folder + '/' + args.property + '/checkpoint_model.pth'
+        torch.save(saved_state, checkpoint_filename_path)
+        print('*** Saved checkpoint in: ' + checkpoint_filename_path + ' ***')
+    return best_criterion
+
+def save_checkpoint_ppo(current_criterion, best_criterion, T, E, args):
+    # first model or best model so far
+    if best_criterion is None or current_criterion > best_criterion:
+        best_criterion = current_criterion
+        saved_state = dict(best_criterion=best_criterion,
+                           # T=T.state_dict(),
+                           E=E)
+        checkpoint_filename_path = args.checkpoints_folder + '/' + args.property + '/checkpoint_model_ppo.pth'
         torch.save(saved_state, checkpoint_filename_path)
         print('*** Saved checkpoint in: ' + checkpoint_filename_path + ' ***')
     return best_criterion
@@ -209,11 +221,19 @@ def load_checkpoint(args, device):
         saved_state = torch.load(checkpoint_filename_path, map_location=device)
 
         # create embedding translator
-        T_AB = Translator().to(device)
-        T_BA = Translator().to(device)
 
         best_criterion = saved_state.get('best_criterion')
-        T_AB.load_state_dict(saved_state['T'])
-        T_BA.load_state_dict(saved_state['T_BA'])
         E = saved_state['E']
-    return T, E, best_criterion
+    return E, best_criterion
+
+def load_checkpoint_ppo(args, device):
+    checkpoint_filename_path = args.checkpoints_folder + '/' + args.property + '/checkpoint_model_ppo.pth'
+    if os.path.isfile(checkpoint_filename_path):
+        print('*** Loading checkpoint file ' + checkpoint_filename_path)
+        saved_state = torch.load(checkpoint_filename_path, map_location=device)
+
+        # create embedding translator
+
+        best_criterion = saved_state.get('best_criterion')
+        E = saved_state['E']
+    return E, best_criterion

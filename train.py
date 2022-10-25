@@ -6,10 +6,10 @@ from property_handler import property_calc
 
 # my files
 from data_preprocess import create_dataset, Dataset
-from embedder import Embedder
+from embedder import Embedder, load_checkpoint_embedder
 from embedder_train import fit, get_model_train_params, get_dataloader
 from embedding_translator import Translator, weights_init_normal, LambdaLR, ReplayBuffer, Statistics, \
-    save_checkpoint
+    save_checkpoint, save_checkpoint_ppo, load_checkpoint
 from property_handler import smiles2fingerprint, rdkit_no_error_print
 from validation import general_validation
 from common_utils import set_seed, input2output, get_random_list
@@ -29,7 +29,7 @@ def parse_arguments():
     parser.add_argument('--batch_size', type=int, default=32, help='batch size for end-end model')
     parser.add_argument('--property', type=str, default='QED',
                         help='name of property to translate (should be folder with that name inside dataset)')
-    parser.add_argument('--init_lr', type=float, default=0.0003, help='initial learning rate')
+    parser.add_argument('--init_lr', type=float, default=0.003, help='initial learning rate')
     parser.add_argument('--is_valid', default=True, action='store_true', help='run validation every train epoch')
     parser.add_argument('--valid_direction', type=str, default='AB',
                         help='direction of validation translation- AB: A->B; BA: B->A')
@@ -68,7 +68,7 @@ def parse_arguments():
     return args
 
 
-def train_iteration_T(real, E, T, optimizer_T, args):
+def train_iteration_T(real, E, optimizer_T, args):
     optimizer_T.zero_grad()
 
     # embedder (METN)
@@ -76,17 +76,7 @@ def train_iteration_T(real, E, T, optimizer_T, args):
     if args.kl_loss is False:
         kl_loss = None
 
-    # prepare fingerprints
-    if args.use_fp:
-        real_fp_str = [smiles2fingerprint(E.tensor2string(mol), fp_translator=True) for mol in real_A]
-        real_fp = torch.tensor([[float(dig) for dig in fp_mol] for fp_mol in real_fp_str]).to(device)
-        real_fp = real_fp.detach()
-    else:
-        real_fp = None
-
-    fake_emb = T(real_emb, real_fp)
-
-    cycle_loss,_ = E.forward_decoder(real, fake_emb)
+    cycle_loss,_ = E.forward_decoder(real, real_emb)
 
     # Total loss
     if args.cycle_loss and args.gan_loss is False and args.kl_loss is False:  # Main model: only cycle
@@ -100,7 +90,7 @@ def train_iteration_T(real, E, T, optimizer_T, args):
     loss.backward()
     optimizer_T.step()
 
-    return loss, cycle_loss, kl_loss, fake_emb
+    return loss, cycle_loss, kl_loss
 
 
 # for ablation
@@ -126,10 +116,9 @@ def train_iteration_D(real, fake_emb, model, D, loss_GAN, optimizer_D):
     return loss_D, loss_D_real, loss_D_fake
 
 
-def validation(args, model_name, E, T, epoch, boundaries, random_seed_list, fig=None, ax=None):
+def validation(args, model_name, E, epoch, boundaries, random_seed_list, fig=None, ax=None):
     # evaluation mode
     E.eval()
-    T.eval()
 
     # dataset loader
     valid_loader = get_dataloader(E, args, E.dataset.validset, batch_size=args.validation_batch_size,
@@ -146,7 +135,7 @@ def validation(args, model_name, E, T, epoch, boundaries, random_seed_list, fig=
 
     # generate output molecule from input molecule
     def local_input2output(input_batch):
-        return input2output(args, input_batch, E, T, E, random_seed_list,
+        return input2output(args, input_batch, E, E, random_seed_list,
                             max_out_len=args.validation_max_len)
 
     # use general validation function
@@ -157,7 +146,6 @@ def validation(args, model_name, E, T, epoch, boundaries, random_seed_list, fig=
 
     # back to train mode
     E.train()
-    T.train()
 
     return avg_similarity, avg_property, avg_SR, avg_validity, avg_novelty, avg_diversity
 
@@ -216,21 +204,23 @@ if __name__ == "__main__":
     dataset_A = Dataset(dataset_file_A, use_atom_tokenizer=args.tokenize, isB=False)
 
     # create  and pre-train the embedders (METNs)
-    embedder_epochs_num = 120
 
-    E = Embedder(dataset_A, 'Embedder A', args).to(device)
-    # fit(args, E, embedder_epochs_num, boundaries, is_validation=True)
+    # E = Embedder(dataset_A, 'Embedder A', args).to(device)
+    # fit(args, E, int(embedder_epochs_num), boundaries, is_validation=True, kl_loss=True)
 
-
+    E,_ = load_checkpoint_embedder(args,device)
 
     # create embedding translators (EETN)
-    T = Translator().to(device)
+    # T = Translator().to(device)
 
     # weights
-    T.apply(weights_init_normal)
+    # T.apply(weights_init_normal)
 
     # optimizer
-    optimizer_T = torch.optim.Adam(itertools.chain(T.parameters(), get_model_train_params(E)), lr=args.init_lr,
+    # optimizer_T = torch.optim.Adam(itertools.chain(T.parameters(), get_model_train_params(E)), lr=args.init_lr,
+    #                                betas=(0.5, 0.999))
+
+    optimizer_T = torch.optim.Adam(itertools.chain(get_model_train_params(E)), lr=args.init_lr,
                                    betas=(0.5, 0.999))
 
     # scheduler
@@ -248,89 +238,48 @@ if __name__ == "__main__":
     # generate random seeds
     random_seed_list = get_random_list(args.num_retries)
 
-    # ###### Training ######
-    # for epoch in range(args.epoch_init, args.epochs + 1):
-    #     print(' ')
-    #     print('epoch #' + str(epoch))
-    #
-    #     # statistics
-    #     stats = Statistics()
-    #
-    #     for i, real_A in enumerate(A_train_loader):
-    #         # update translators (EETN) and embedders (METNs)
-    #         loss, cycle_loss, kl_loss, fake_emb = \
-    #             train_iteration_T(real_A, E, T, optimizer_T, args)
-    #
-    #         # update statistics
-    #         stats.update(loss, cycle_loss, kl_loss)
-    #
-    #     # print epoch's statistics
-    #     stats.print()
-    #
-    #     # run validation
-    #     if args.is_valid is True and (epoch == 1 or epoch % args.validation_freq == 0):
-    #         if epoch == 1:
-    #             fig, ax = plt.subplots()
-    #         avg_similarity_AB, avg_property_AB, avg_SR_AB, avg_validity_AB, avg_novelty_AB, avg_diversity_AB = \
-    #             validation(args, 'PRE PPO', E, T, epoch, boundaries, random_seed_list, fig=fig,
-    #                        ax=ax)
-    #         # save plots
-    #         if args.plot_results is True:
-    #             fig.savefig(args.plots_folder + '/' + args.property + '/PRE PPO')
-    #
-    #         # early stopping
-    #         current_criterion = avg_SR_AB
-    #         is_early_stop, runs_without_improvement = \
-    #             early_stop(args.early_stopping, current_criterion, best_criterion, runs_without_improvement)
-    #         if is_early_stop:
-    #             break
-    #
-    #         # save checkpoint
-    #         best_criterion = save_checkpoint(current_criterion, best_criterion, T, E, args)
-    #
-    #     # update learning rate
-    #     lr_scheduler_T.step()
+    ###### Training ######
+    for epoch in range(args.epoch_init, args.epochs + 1):
+        print(' ')
+        print('epoch #' + str(epoch))
 
+        # statistics
+        stats = Statistics()
 
-    # PPO
-    E.PPO_prepare()
-    ppo_trainer = PPOTrainer(E)
-    for i, real in enumerate(A_train_loader):
-        query, _ = E.forward_encoder(real)
+        for i, real_A in enumerate(A_train_loader):
+            # update translators (EETN) and embedders (METNs)
+            loss, cycle_loss, kl_loss = \
+                train_iteration_T(real_A, E,  optimizer_T, args)
 
-        # query = query[0:1] # for debug
+            # update statistics
+            stats.update(loss, cycle_loss, kl_loss)
 
-        # prepare fingerprints
-        # if args.use_fp:
-        #     fp_str = [smiles2fingerprint(E.tensor2string(mol), fp_translator=True) for mol in real]
-        #     fp = torch.tensor([[float(dig) for dig in fp_mol] for fp_mol in fp_str]).to(device)
-        #     fp = fp.detach()
-        # else:
-        #     fp = None
-        #
-        # query = T(real_emb, fp)
-        response = E.decoder_test(100, query)
-        response = [E.string2tensor(s) for s in response]
-        # remove invalid and get scores
-        queries, valid_responses, scores = [], [], []
-        lst = []
-        for real, fake in zip(query,response):
-            try:
-                old_score = property_calc(real, args.property)
-                score = property_calc(fake, args.property) - old_score
-                lst.append((fake, score, real))
-                # valid_responses.append(fake)
-                # scores.append(score)
-                # queries.append(real)
-            except:
-                # pass
-                # valid_responses.append(fake)
-                # scores.append(0)
-                # queries.append(real)
-                lst.append((fake, 0, real))
-        lst.sort(key=lambda x: -len(x[0]))
-        valid_responses, scores, queries = zip(*lst)
-        ppo_trainer.step(queries, valid_responses, scores)
+        # print epoch's statistics
+        stats.print()
+
+        # run validation
+        if args.is_valid is True and (epoch == 1 or epoch % args.validation_freq == 0):
+            if epoch == 1:
+                fig, ax = plt.subplots()
+            avg_similarity_AB, avg_property_AB, avg_SR_AB, avg_validity_AB, avg_novelty_AB, avg_diversity_AB = \
+                validation(args, 'PRE PPO', E, epoch, boundaries, random_seed_list, fig=fig,
+                           ax=ax)
+            # save plots
+            if args.plot_results is True:
+                fig.savefig(args.plots_folder + '/' + args.property + '/PRE PPO')
+
+            # early stopping
+            current_criterion = avg_SR_AB
+            is_early_stop, runs_without_improvement = \
+                early_stop(args.early_stopping, current_criterion, best_criterion, runs_without_improvement)
+            if is_early_stop:
+                break
+
+            # save checkpoint
+            best_criterion = save_checkpoint(current_criterion, best_criterion, None, E, args)
+
+        # update learning rate
+        lr_scheduler_T.step()
 
 
 
